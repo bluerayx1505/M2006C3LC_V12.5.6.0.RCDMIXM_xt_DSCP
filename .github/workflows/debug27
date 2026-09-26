@@ -1,0 +1,35 @@
+name: Step 27 - Build xt_DSCP module
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install -y build-essential gcc-aarch64-linux-gnu make
+
+    - name: Clone kernel source
+      run: git clone https://github.com/MiCode/dandelion-q-oss kernel
+
+    - name: Prepare out directory
+      run: mkdir -p kernel/out
+
+    - name: Copy official config
+      run: cp .github/configs/.config kernel/out/.config
+
+    - name: Run olddefconfig
+      run: make ARCH=arm64 O=kernel/out -C kernel olddefconfig
+
+    - name: Prepare modules
+      run: make ARCH=arm64 O=kernel/out -C kernel modules_prepare
+
+    - name: Build netfilter modules
+      run: make ARCH=arm64 O=kernel/out -C kernel M=net/netfilter modules
+
+    - name: Upload
