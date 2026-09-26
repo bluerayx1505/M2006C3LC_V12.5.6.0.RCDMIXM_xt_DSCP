@@ -1,0 +1,28 @@
+name: Debug 13 xt_DSCP workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug13:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Say hello
+      run: echo "Debug 13 iniciado correctamente ✅"
+
+    - name: List repo files
+      run: ls -la
+
+    - name: Clone kernel
+      run: |
+        set -x
+        echo "Clonando kernel..."
+        git clone --depth 1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
+        echo "Kernel clonado ✅"
+
+    - name: List kernel files
+      run: ls -la kernel
