@@ -1,0 +1,36 @@
+name: Debug 14 xt_DSCP workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug14:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Clone kernel
+      run: |
+        set -x
+        git clone --depth 1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
+
+    - name: Copy .config
+      run: |
+        set -x
+        cp .config kernel/.config
+        mkdir -p kernel/out
+        cp .config kernel/out/.config
+
+    - name: Install dependencies
+      run: |
+        set -x
+        sudo apt-get update
+        sudo apt-get install -y build-essential llvm clang lld make bc bison flex libssl-dev \
+          libncurses-dev libelf-dev
+
+    - name: Run olddefconfig
+      run: |
+        set -x
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel olddefconfig
