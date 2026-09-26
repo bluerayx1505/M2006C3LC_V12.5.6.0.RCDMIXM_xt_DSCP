@@ -1,0 +1,41 @@
+name: Debug 25 dandelion defconfig guaranteed artifact
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug25:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Clone kernel dandelion-q-oss
+      run: |
+        git clone --depth=1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git -b dandelion-q-oss kernel
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential bc bison flex libssl-dev \
+          libncurses-dev libelf-dev
+
+    - name: Generate defconfig
+      continue-on-error: true
+      run: |
+        mkdir -p kernel/out
+        make ARCH=arm64 O=kernel/out -C kernel dandelion_defconfig || true
+
+    - name: Find all .config
+      run: |
+        find kernel -name ".config" -ls || true
+
+    - name: Upload any .config found
+      if: always()
+      uses: actions/upload-artifact@v4.3.0
+      with:
+        name: dandelion_defconfig-config
+        path: |
+          kernel/.config
+          kernel/out/.config
