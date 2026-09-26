@@ -1,0 +1,46 @@
+name: Debug 19 xt_DSCP workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug19:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Clone kernel dandelion-q-oss
+      run: |
+        git clone --depth=1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git -b dandelion-q-oss kernel
+
+    - name: Copy custom .config
+      run: |
+        mkdir -p kernel/out
+        cp .config kernel/.config
+        cp .config kernel/out/.config
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential bc bison flex libssl-dev \
+          libncurses-dev libelf-dev
+
+    - name: Validate config
+      run: |
+        make ARCH=arm64 O=kernel/out -C kernel olddefconfig
+
+    - name: Prepare modules
+      run: |
+        make ARCH=arm64 O=kernel/out -C kernel modules_prepare
+
+    - name: Build xt_DSCP.ko
+      run: |
+        make ARCH=arm64 O=kernel/out -C kernel M=net/netfilter modules
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4.3.0
+      with:
+        name: xt_DSCP-dandelion-custom
+        path: kernel/out/net/netfilter/xt_DSCP.ko
