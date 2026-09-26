@@ -1,0 +1,49 @@
+name: step 32 - Build full kernel and boot.img
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc-aarch64-linux-gnu make clang lld bc flex bison libssl-dev
+
+    - name: Prepare output directory
+      run: mkdir -p out
+
+    - name: Copy official .config
+      run: cp .github/configs/.config out/.config
+
+    - name: Kernel olddefconfig
+      run: make ARCH=arm64 LLVM=1 O=out olddefconfig
+
+    - name: Build kernel image
+      run: make ARCH=arm64 LLVM=1 O=out -j$(nproc)
+
+    - name: Build boot.img
+      run: |
+        mkdir -p out/bootimg
+        cp out/arch/arm64/boot/Image.gz out/bootimg/
+        cp out/arch/arm64/boot/dts/*.dtb out/bootimg/
+        # Empaquetar boot.img con mkbootimg (ajusta parámetros según tu device tree)
+        mkbootimg --kernel out/bootimg/Image.gz \
+                  --dtb out/bootimg/*.dtb \
+                  --ramdisk ramdisk.img \
+                  --cmdline "console=ttyS0,115200n8" \
+                  --base 0x40000000 \
+                  --pagesize 2048 \
+                  --output out/bootimg/boot.img
+
+    - name: Upload boot.img artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: boot.img
+        path: out/bootimg/boot.img
