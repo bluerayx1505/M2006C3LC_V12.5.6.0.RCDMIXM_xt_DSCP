@@ -1,0 +1,47 @@
+name: Build xt_DSCP module
+
+on:
+  workflow_dispatch:   # lo lanzas manualmente desde GitHub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout workflow repo
+      uses: actions/checkout@v3
+
+    - name: Clone kernel source
+      run: |
+        git clone --branch lime-q-oss --depth 1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y llvm clang lld make bc bison flex libssl-dev \
+          libncurses-dev libelf-dev
+
+    - name: Restore .config
+      run: |
+        cp .config kernel/.config
+        mkdir -p kernel/out
+        cp .config kernel/out/.config
+
+    - name: Sync config
+      run: |
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel olddefconfig
+
+    - name: Prepare modules
+      run: |
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel modules_prepare
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel headers_install
+
+    - name: Build xt_DSCP.ko
+      run: |
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel M=net/netfilter modules
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: xt_DSCP-module
+        path: kernel/out/net/netfilter/xt_DSCP.ko
