@@ -1,0 +1,65 @@
+name: Debug 9 xt_DSCP workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug9:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4.1.0
+
+    - name: Clone kernel
+      run: |
+        set -x
+        echo "Clonando kernel..."
+        git clone --depth 1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
+        echo "Kernel clonado ✅"
+
+    - name: Copy .config
+      run: |
+        set -x
+        echo "Copiando .config..."
+        cp .config kernel/.config
+        mkdir -p kernel/out
+        cp .config kernel/out/.config
+        echo ".config copiado ✅"
+
+    - name: Install dependencies
+      run: |
+        set -x
+        echo "Instalando dependencias..."
+        sudo apt-get update
+        sudo apt-get install -y build-essential llvm clang lld make bc bison flex libssl-dev \
+          libncurses-dev libelf-dev
+        echo "Dependencias instaladas ✅"
+
+    - name: Sync config
+      run: |
+        set -x
+        echo "Ejecutando olddefconfig..."
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel olddefconfig
+        echo "olddefconfig terminado ✅"
+
+    - name: Prepare modules
+      run: |
+        set -x
+        echo "Preparando módulos..."
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel modules_prepare
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel headers_install
+        echo "Módulos preparados ✅"
+
+    - name: Build xt_DSCP.ko
+      run: |
+        set -x
+        echo "Compilando xt_DSCP.ko..."
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel M=net/netfilter modules
+        echo "Compilación terminada ✅"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4.3.0
+      with:
+        name: xt_DSCP-module
+        path: kernel/out/net/netfilter/xt_DSCP.ko
