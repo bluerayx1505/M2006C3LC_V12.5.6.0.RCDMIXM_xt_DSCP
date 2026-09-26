@@ -1,0 +1,38 @@
+name: step 30 - Build xt_DSCP.ko
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc-aarch64-linux-gnu make clang lld
+
+    - name: Prepare output directory
+      run: mkdir -p out
+
+    - name: Copy official .config
+      run: cp .github/configs/.config out/.config
+
+    - name: Kernel olddefconfig
+      run: make ARCH=arm64 LLVM=1 O=out olddefconfig
+
+    - name: Kernel modules_prepare
+      run: make ARCH=arm64 LLVM=1 O=out modules_prepare
+
+    - name: Build netfilter module
+      run: make ARCH=arm64 LLVM=1 O=out M=net/netfilter modules
+
+    - name: Upload xt_DSCP.ko artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: xt_DSCP.ko
+        path: out/net/netfilter/xt_DSCP.ko
