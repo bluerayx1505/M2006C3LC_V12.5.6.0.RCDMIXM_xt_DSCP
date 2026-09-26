@@ -1,0 +1,30 @@
+name: Debug 3 xt_DSCP workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug3:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v3
+
+    - name: Say hello
+      run: echo "Workflow Debug 3 iniciado correctamente ✅"
+
+    - name: List repo files
+      run: ls -la
+
+    - name: Clone kernel
+      run: git clone --depth 1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
+
+    - name: List kernel files
+      run: ls -la kernel
+
+    - name: Copy .config
+      run: cp .config kernel/.config
+
+    - name: Confirm .config copied
+      run: ls -la kernel | grep config
