@@ -1,0 +1,117 @@
+name: Deep_sp4
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Clone kernel dandelion-q-oss
+      run: |
+        set -ex
+        git clone --depth=1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git -b dandelion-q-oss kernel
+
+    - name: Install dependencies
+      run: |
+        set -ex
+        sudo apt-get update
+        sudo apt-get install -y build-essential bc bison flex libssl-dev \
+          libncurses-dev libelf-dev clang lld
+
+    - name: Prepare out directory
+      run: |
+        set -ex
+        mkdir -p kernel/out
+
+    - name: Copy official .config
+      run: |
+        set -ex
+        if [ -f .github/.github/configs/.config ]; then
+          echo "Usando .github/.github/configs/.config"
+          cp .github/.github/configs/.config kernel/out/.config
+        elif [ -f .github/configs/.config ]; then
+          echo "Usando .github/configs/.config"
+          cp .github/configs/.config kernel/out/.config
+        elif [ -f .config ]; then
+          echo "Usando .config de la raíz"
+          cp .config kernel/out/.config
+        else
+          echo "ERROR: No se encontró ningún .config en las rutas esperadas"
+          exit 1
+        fi
+
+    - name: Enable xt_DSCP in .config
+      run: |
+        set -ex
+        if grep -q "^# CONFIG_NETFILTER_XT_TARGET_DSCP is not set" kernel/out/.config; then
+          sed -i 's/^# CONFIG_NETFILTER_XT_TARGET_DSCP is not set/CONFIG_NETFILTER_XT_TARGET_DSCP=m/' kernel/out/.config
+        elif grep -q "^CONFIG_NETFILTER_XT_TARGET_DSCP=" kernel/out/.config; then
+          sed -i 's/^CONFIG_NETFILTER_XT_TARGET_DSCP=.*/CONFIG_NETFILTER_XT_TARGET_DSCP=m/' kernel/out/.config
+        else
+          echo "CONFIG_NETFILTER_XT_TARGET_DSCP=m" >> kernel/out/.config
+        fi
+        echo "=== Verificación ==="
+        grep "CONFIG_NETFILTER_XT_TARGET_DSCP" kernel/out/.config
+
+    - name: Run olddefconfig
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel olddefconfig -j2
+        echo "=== Verificación post-olddefconfig ==="
+        grep "CONFIG_NETFILTER_XT_TARGET_DSCP" kernel/out/.config || echo "ADVERTENCIA: la opción desapareció tras olddefconfig"
+
+    - name: Fix dtc yylloc for GCC 10+
+      run: |
+        set -ex
+        sed -i '/^YYLTYPE yylloc;$/d' kernel/scripts/dtc/dtc-lexer.l
+        sed -i '/^YYLTYPE yylloc;$/d' kernel/scripts/dtc/dtc-lexer.lex.c_shipped
+
+    - name: Fix vdso_prepare for external modules (arm64)
+      run: |
+        set -ex
+        python3 .github/scripts/fix_vdso.py
+
+    - name: Prepare kernel scripts
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel scripts -j2
+
+    - name: Prepare modules
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel modules_prepare -j2
+
+    - name: Build xt_DSCP only
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel M=net/netfilter xt_DSCP.ko \
+          KBUILD_MODPOST_WARN=1 modules -j2
+
+    - name: Package xt_DSCP
+      run: |
+        set -ex
+        # La ruta real es kernel/kernel/out/ porque O=kernel/out se resuelve
+        # relativo al directorio -C kernel
+        KO="kernel/kernel/out/net/netfilter/xt_DSCP.ko"
+        if [ ! -f "$KO" ]; then
+          echo "ERROR: no se encontró $KO"
+          echo "=== Buscando xt_DSCP.ko en todo el repo ==="
+          find . -iname "xt_DSCP.ko" 2>/dev/null || true
+          exit 1
+        fi
+        mkdir -p kernel/kernel/out/netfilter_pkg
+        cp "$KO" kernel/kernel/out/netfilter_pkg/
+        sha256sum kernel/kernel/out/netfilter_pkg/* > kernel/kernel/out/netfilter_pkg/SHA256SUMS.txt
+        tar -czf xt_DSCP-module.tar.gz -C kernel/kernel/out/netfilter_pkg .
+
+    - name: Upload xt_DSCP artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: xt_DSCP-module
+        path: xt_DSCP-module.tar.gz
