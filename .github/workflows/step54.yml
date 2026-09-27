@@ -1,0 +1,72 @@
+name: step 54 - Build netfilter modules full trace
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Clone kernel dandelion-q-oss
+      run: |
+        set -ex
+        git clone --depth=1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git -b dandelion-q-oss kernel
+
+    - name: Install dependencies
+      run: |
+        set -ex
+        sudo apt-get update
+        sudo apt-get install -y build-essential bc bison flex libssl-dev \
+          libncurses-dev libelf-dev clang lld
+
+    - name: Prepare out directory
+      run: |
+        set -ex
+        mkdir -p kernel/out
+
+    - name: Copy official .config
+      run: |
+        set -ex
+        if [ -f .github/configs/.config ]; then
+          cp .github/configs/.config kernel/out/.config
+        elif [ -f .config ]; then
+          cp .config kernel/out/.config
+        else
+          echo "No se encontró ningún .config" && exit 1
+        fi
+
+    - name: Run olddefconfig
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel olddefconfig
+
+    - name: Prepare modules
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel modules_prepare
+
+    - name: Build netfilter modules
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel M=net/netfilter modules
+
+    - name: Package DSCP/TOS/MARK/CLASSIFY
+      run: |
+        set -ex
+        mkdir -p kernel/out/netfilter_pkg
+        cp kernel/out/net/netfilter/xt_DSCP.ko kernel/out/netfilter_pkg/
+        cp kernel/out/net/netfilter/xt_TOS.ko kernel/out/netfilter_pkg/
+        cp kernel/out/net/netfilter/xt_MARK.ko kernel/out/netfilter_pkg/
+        cp kernel/out/net/netfilter/xt_CLASSIFY.ko kernel/out/netfilter_pkg/
+        sha256sum kernel/out/netfilter_pkg/* > kernel/out/netfilter_pkg/SHA256SUMS.txt
+        tar -czf netfilter-modules.tar.gz -C kernel/out/netfilter_pkg .
+
+    - name: Upload netfilter artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: netfilter-modules
+        path: netfilter-modules.tar.gz
