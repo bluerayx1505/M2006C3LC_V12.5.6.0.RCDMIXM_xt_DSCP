@@ -1,0 +1,188 @@
+name: Deep_sp12
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Clone kernel custom (plmzaq2112, 4.19.x)
+      run: |
+        set -ex
+        git clone --depth=1 https://github.com/plmzaq2112/android_kernel_mt6765.git -b v1.0 kernel
+
+    - name: Install dependencies
+      run: |
+        set -ex
+        sudo apt-get update
+        sudo apt-get install -y build-essential bc bison flex libssl-dev \
+          libncurses-dev libelf-dev clang lld xz-utils
+
+    - name: Extract kheaders.tar.xz (headers exactos del dispositivo)
+      run: |
+        set -ex
+        if [ ! -f .github/kheaders/kheaders.tar.xz ]; then
+          echo "ERROR: No se encontró .github/kheaders/kheaders.tar.xz"
+          echo "Debes subir el archivo kheaders.tar.xz extraído de /sys/kernel/kheaders.tar.xz"
+          exit 1
+        fi
+        echo "=== Extrayendo kheaders.tar.xz ==="
+        mkdir -p kheaders-extracted
+        tar -xf .github/kheaders/kheaders.tar.xz -C kheaders-extracted
+        echo "=== Contenido extraído (primeras 20 líneas) ==="
+        ls kheaders-extracted/ | head -20
+        echo ""
+        echo "=== Buscando Module.symvers en el tar ==="
+        find kheaders-extracted -name "Module.symvers" -o -name "*.symvers" 2>/dev/null || echo "No se encontró Module.symvers"
+
+    - name: Apply device headers to kernel tree
+      run: |
+        set -ex
+        echo "=== Sobrescribiendo headers del kernel con los del dispositivo ==="
+        # Copiar include/ completo (autoconf.h, utsrelease.h, config/, generated/, linux/, net/, uapi/, etc.)
+        if [ -d kheaders-extracted/include ]; then
+          cp -a kheaders-extracted/include/. kernel/include/
+          echo "include/ sobrescrito"
+        fi
+        # Copiar arch/arm64/include/ (generated, asm, uapi)
+        if [ -d kheaders-extracted/arch/arm64/include ]; then
+          cp -a kheaders-extracted/arch/arm64/include/. kernel/arch/arm64/include/
+          echo "arch/arm64/include/ sobrescrito"
+        fi
+        echo ""
+        echo "=== Verificando UTS_RELEASE ==="
+        cat kernel/include/generated/utsrelease.h
+        echo ""
+        echo "=== Verificando autoconf.h tiene DSCP ==="
+        grep "CONFIG_NETFILTER_XT_TARGET_DSCP" kernel/include/generated/autoconf.h || echo "ADVERTENCIA: DSCP no está en autoconf.h"
+        echo ""
+        echo "=== Verificando MODVERSIONS ==="
+        ls kernel/include/config/modversions.h 2>/dev/null && echo "modversions.h presente" || echo "modversions.h NO presente"
+
+    - name: Prepare out directory
+      run: |
+        set -ex
+        mkdir -p kernel/out
+
+    - name: Copy official .config
+      run: |
+        set -ex
+        if [ -f .github/config/.config ]; then
+          echo "Usando .github/config/.config"
+          cp .github/config/.config kernel/out/.config
+        elif [ -f .github/configs/.config ]; then
+          echo "Usando .github/configs/.config"
+          cp .github/configs/.config kernel/out/.config
+        elif [ -f .config ]; then
+          echo "Usando .config de la raíz"
+          cp .config kernel/out/.config
+        else
+          echo "ERROR: No se encontró ningún .config en las rutas esperadas"
+          exit 1
+        fi
+
+    - name: Enable xt_DSCP in .config
+      run: |
+        set -ex
+        if grep -q "^# CONFIG_NETFILTER_XT_TARGET_DSCP is not set" kernel/out/.config; then
+          sed -i 's/^# CONFIG_NETFILTER_XT_TARGET_DSCP is not set/CONFIG_NETFILTER_XT_TARGET_DSCP=m/' kernel/out/.config
+        elif grep -q "^CONFIG_NETFILTER_XT_TARGET_DSCP=" kernel/out/.config; then
+          sed -i 's/^CONFIG_NETFILTER_XT_TARGET_DSCP=.*/CONFIG_NETFILTER_XT_TARGET_DSCP=m/' kernel/out/.config
+        else
+          echo "CONFIG_NETFILTER_XT_TARGET_DSCP=m" >> kernel/out/.config
+        fi
+        echo "=== Verificación ==="
+        grep "CONFIG_NETFILTER_XT_TARGET_DSCP" kernel/out/.config
+
+    - name: Run olddefconfig
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel olddefconfig -j2
+        echo "=== Verificación post-olddefconfig ==="
+        grep "CONFIG_NETFILTER_XT_TARGET_DSCP" kernel/out/.config || echo "ADVERTENCIA: la opción desapareció tras olddefconfig"
+        echo ""
+        echo "=== Verificando vermagic en out/include/generated ==="
+        cat kernel/out/include/generated/utsrelease.h 2>/dev/null || echo "utsrelease.h no generado aún"
+
+    - name: Fix dtc yylloc for GCC 10+
+      run: |
+        set -ex
+        if [ -f kernel/scripts/dtc/dtc-lexer.l ]; then
+          sed -i '/^YYLTYPE yylloc;$/d' kernel/scripts/dtc/dtc-lexer.l
+          echo "Parcheado dtc-lexer.l"
+        fi
+        if [ -f kernel/scripts/dtc/dtc-lexer.lex.c_shipped ]; then
+          sed -i '/^YYLTYPE yylloc;$/d' kernel/scripts/dtc/dtc-lexer.lex.c_shipped
+          echo "Parcheado dtc-lexer.lex.c_shipped"
+        fi
+
+    - name: Fix vdso_prepare for external modules (arm64)
+      run: |
+        set -ex
+        python3 .github/scripts/fix_vdso.py
+
+    - name: Prepare kernel scripts
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel scripts -j2
+
+    - name: Prepare modules
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel modules_prepare -j2
+
+    - name: Build xt_DSCP only
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel M=net/netfilter xt_DSCP.ko \
+          KBUILD_MODPOST_WARN=1 modules -j2 || true
+        echo ""
+        echo "=== Verificando que xt_DSCP.ko se generó ==="
+        find . -iname "xt_DSCP.ko" -type f 2>/dev/null || echo "No se encontró xt_DSCP.ko"
+
+    - name: Verify vermagic of built module
+      run: |
+        set -ex
+        KO=$(find . -iname "xt_DSCP.ko" -type f 2>/dev/null | head -1)
+        if [ -z "$KO" ]; then
+          echo "ERROR: xt_DSCP.ko no encontrado"
+          exit 1
+        fi
+        echo "=== Vermagic del módulo compilado ==="
+        strings "$KO" | grep vermagic || echo "No se pudo leer vermagic"
+        echo ""
+        echo "=== Info del módulo ==="
+        ls -lh "$KO"
+        file "$KO"
+        echo ""
+        echo "=== Comparación esperada ==="
+        echo "Dispositivo espera: 4.19.127-perf-g7288046673d5 SMP preempt mod_unload modversions aarch64"
+
+    - name: Locate and copy xt_DSCP.ko
+      run: |
+        set -ex
+        KO=$(find . -iname "xt_DSCP.ko" -type f 2>/dev/null | head -1)
+        if [ -z "$KO" ]; then
+          echo "ERROR: xt_DSCP.ko no se encontró"
+          find . -iname "*.ko" -type f 2>/dev/null | head -20 || true
+          exit 1
+        fi
+        cp "$KO" ./xt_DSCP.ko
+        ls -lh ./xt_DSCP.ko
+        sha256sum ./xt_DSCP.ko > ./xt_DSCP.ko.sha256
+        cat ./xt_DSCP.ko.sha256
+
+    - name: Upload xt_DSCP.ko
+      uses: actions/upload-artifact@v4
+      with:
+        name: xt_DSCP-ko
+        path: |
+          xt_DSCP.ko
+          xt_DSCP.ko.sha256
+        if-no-files-found: error
