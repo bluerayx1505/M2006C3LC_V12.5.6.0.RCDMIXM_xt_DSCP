@@ -1,65 +1,124 @@
-name: Debug 11 xt_DSCP workflow
+name: deepsss5
 
 on:
   workflow_dispatch:
 
 jobs:
-  debug11:
-    runs-on: ubuntu-24.04
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
 
     steps:
     - name: Checkout repo
-      uses: actions/checkout@v4.2.3
+      uses: actions/checkout@v4
 
-    - name: Clone kernel
+    - name: Clone kernel dandelion-q-oss
       run: |
-        set -x
-        echo "Clonando kernel..."
-        git clone --depth 1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
-        echo "Kernel clonado ✅"
-
-    - name: Copy .config
-      run: |
-        set -x
-        echo "Copiando .config..."
-        cp .config kernel/.config
-        mkdir -p kernel/out
-        cp .config kernel/out/.config
-        echo ".config copiado ✅"
+        set -ex
+        git clone --depth=1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git -b dandelion-q-oss kernel
 
     - name: Install dependencies
       run: |
-        set -x
-        echo "Instalando dependencias..."
+        set -ex
         sudo apt-get update
-        sudo apt-get install -y build-essential llvm clang lld make bc bison flex libssl-dev \
-          libncurses-dev libelf-dev
-        echo "Dependencias instaladas ✅"
+        sudo apt-get install -y build-essential bc bison flex libssl-dev \
+          libncurses-dev libelf-dev clang lld
 
-    - name: Sync config
+    - name: Prepare out directory
       run: |
-        set -x
-        echo "Ejecutando olddefconfig..."
-        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel olddefconfig
-        echo "olddefconfig terminado ✅"
+        set -ex
+        mkdir -p kernel/out
+
+    - name: Copy official .config
+      run: |
+        set -ex
+        if [ -f .github/configs/.config ]; then
+          cp .github/configs/.config kernel/out/.config
+        elif [ -f .config ]; then
+          cp .config kernel/out/.config
+        else
+          echo "No se encontró ningún .config" && exit 1
+        fi
+
+    - name: Run olddefconfig
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel olddefconfig -j2
+
+    - name: Fix dtc yylloc for GCC 10+
+      run: |
+        set -ex
+        sed -i '/^YYLTYPE yylloc;$/d' kernel/scripts/dtc/dtc-lexer.l
+        sed -i '/^YYLTYPE yylloc;$/d' kernel/scripts/dtc/dtc-lexer.lex.c_shipped
+
+    - name: Fix vdso_prepare for external modules (arm64)
+      run: |
+        set -ex
+        python3 - <<'PYEOF'
+        import re
+        path = "kernel/arch/arm64/Makefile"
+        with open(path, "r") as f:
+            content = f.read()
+
+        old_block = """prepare: vdso_prepare
+vdso_prepare: prepare0
+	$(Q)$(MAKE) $(build)=arch/arm64/kernel/vdso include/generated/vdso-offsets.h"""
+
+        new_block = """ifeq ($(KBUILD_EXTMOD),)
+prepare: vdso_prepare
+vdso_prepare: prepare0
+	$(Q)$(MAKE) $(build)=arch/arm64/kernel/vdso include/generated/vdso-offsets.h
+endif"""
+
+        if old_block in content:
+            content = content.replace(old_block, new_block)
+            with open(path, "w") as f:
+                f.write(content)
+            print("Parche vdso_prepare aplicado correctamente.")
+        else:
+            print("Advertencia: no se encontró el bloque exacto. Buscando alternativas...")
+            pattern = r"(prepare: vdso_prepare\s*\nvdso_prepare: prepare0\s*\n\t\$\(Q\)\$\(MAKE\).*vdso-offsets\.h)"
+            match = re.search(pattern, content)
+            if match:
+                content = content.replace(match.group(1), "ifeq ($(KBUILD_EXTMOD),)\n" + match.group(1) + "\nendif")
+                with open(path, "w") as f:
+                    f.write(content)
+                print("Parche vdso_prepare aplicado (fallback).")
+            else:
+                raise SystemExit("ERROR: No se pudo encontrar la sección vdso_prepare en arch/arm64/Makefile")
+        PYEOF
+
+    - name: Prepare kernel scripts
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel scripts -j2
 
     - name: Prepare modules
       run: |
-        set -x
-        echo "Preparando módulos..."
-        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel modules_prepare
-        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel headers_install
-        echo "Módulos preparados ✅"
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel modules_prepare -j2
 
-    - name: Build xt_DSCP.ko
+    - name: Build xt_DSCP only
       run: |
-        set -x
-        echo "Compilando xt_DSCP.ko..."
-        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel M=net/netfilter modules
-        echo "Compilación terminada ✅"
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel M=net/netfilter xt_DSCP.ko \
+          KBUILD_MODPOST_WARN=1 modules -j2
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4.3.0
+    - name: Package xt_DSCP
+      run: |
+        set -ex
+        mkdir -p kernel/out/netfilter_pkg
+        cp kernel/out/net/netfilter/xt_DSCP.ko kernel/out/netfilter_pkg/ || true
+        if [ ! -f kernel/out/netfilter_pkg/xt_DSCP.ko ]; then
+          echo "ERROR: xt_DSCP.ko no se generó"
+          ls -la kernel/out/net/netfilter/ | head -50
+          exit 1
+        fi
+        sha256sum kernel/out/netfilter_pkg/* > kernel/out/netfilter_pkg/SHA256SUMS.txt
+        tar -czf xt_DSCP-module.tar.gz -C kernel/out/netfilter_pkg .
+
+    - name: Upload xt_DSCP artifact
+      uses: actions/upload-artifact@v4
       with:
         name: xt_DSCP-module
-        path: kernel/out/net/netfilter/xt_DSCP.ko
+        path: xt_DSCP-module.tar.gz
