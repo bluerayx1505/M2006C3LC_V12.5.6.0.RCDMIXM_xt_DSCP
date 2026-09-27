@@ -1,0 +1,36 @@
+name: step 52 - Build netfilter modules with SHA256
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Clone kernel dandelion-q-oss
+      run: |
+        set -x
+        git clone --depth=1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git -b dandelion-q-oss kernel
+
+    - name: Install dependencies
+      run: |
+        set -x
+        sudo apt-get update
+        sudo apt-get install -y build-essential bc bison flex libssl-dev \
+          libncurses-dev libelf-dev clang lld
+
+    - name: Prepare out directory
+      run: |
+        set -x
+        mkdir -p kernel/out
+
+    - name: Copy official .config
+      run: |
+        set -x
+        if [ -f .github/configs/.config ]; then
+          cp .github/configs/.config kernel/out/.config
+        elif [ -f .config ]; then
