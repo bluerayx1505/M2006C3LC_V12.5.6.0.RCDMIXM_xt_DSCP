@@ -1,0 +1,233 @@
+name: Deep_sp18
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Clone kernel custom (plmzaq2112, 4.19.x)
+      run: |
+        set -ex
+        git clone --depth=1 https://github.com/plmzaq2112/android_kernel_mt6765.git -b v1.0 kernel
+
+    - name: Install dependencies
+      run: |
+        set -ex
+        sudo apt-get update
+        sudo apt-get install -y build-essential bc bison flex libssl-dev \
+          libncurses-dev libelf-dev clang lld xz-utils
+
+    - name: Verify kheaders.tar.xz exists
+      run: |
+        set -ex
+        ls -lh .github/kheaders/kheaders.tar.xz
+
+    - name: Prepare out directory
+      run: |
+        set -ex
+        mkdir -p kernel/out
+
+    - name: Copy official .config
+      run: |
+        set -ex
+        if [ -f .github/config/.config ]; then
+          cp .github/config/.config kernel/out/.config
+        elif [ -f .config ]; then
+          cp .config kernel/out/.config
+        else
+          echo "ERROR: No se encontró .config"
+          exit 1
+        fi
+
+    - name: Enable xt_DSCP in .config
+      run: |
+        set -ex
+        if grep -q "^# CONFIG_NETFILTER_XT_TARGET_DSCP is not set" kernel/out/.config; then
+          sed -i 's/^# CONFIG_NETFILTER_XT_TARGET_DSCP is not set/CONFIG_NETFILTER_XT_TARGET_DSCP=m/' kernel/out/.config
+        elif grep -q "^CONFIG_NETFILTER_XT_TARGET_DSCP=" kernel/out/.config; then
+          sed -i 's/^CONFIG_NETFILTER_XT_TARGET_DSCP=.*/CONFIG_NETFILTER_XT_TARGET_DSCP=m/' kernel/out/.config
+        else
+          echo "CONFIG_NETFILTER_XT_TARGET_DSCP=m" >> kernel/out/.config
+        fi
+        grep "CONFIG_NETFILTER_XT_TARGET_DSCP" kernel/out/.config
+
+    - name: Force PREEMPT mode with scripts/config
+      run: |
+        set -ex
+        kernel/scripts/config --file kernel/out/.config \
+          --disable PREEMPT_NONE \
+          --disable PREEMPT_VOLUNTARY \
+          --enable PREEMPT
+        grep -E "CONFIG_PREEMPT" kernel/out/.config
+
+    - name: Patch vermagic.h to force preempt
+      run: |
+        set -ex
+        python3 - <<'PYEOF'
+        import re, sys
+        path = "kernel/include/linux/vermagic.h"
+        with open(path) as f:
+            content = f.read()
+        pattern = r"(#ifdef CONFIG_PREEMPT\s*\n#define MODULE_VERMAGIC_PREEMPT[^\n]*\n#else\s*\n#define MODULE_VERMAGIC_PREEMPT[^\n]*\n#endif)"
+        match = re.search(pattern, content)
+        if match:
+            content = content.replace(match.group(0), '#define MODULE_VERMAGIC_PREEMPT "preempt "')
+            with open(path, "w") as f:
+                f.write(content)
+            print("vermagic.h parcheado.")
+        else:
+            pattern2 = r"#define MODULE_VERMAGIC_PREEMPT\s+\"[^\"]*\""
+            if re.search(pattern2, content):
+                content = re.sub(pattern2, '#define MODULE_VERMAGIC_PREEMPT "preempt "', content)
+                with open(path, "w") as f:
+                    f.write(content)
+                print("vermagic.h parcheado (fallback).")
+            else:
+                print("ERROR: no se encontró MODULE_VERMAGIC_PREEMPT")
+                sys.exit(1)
+        PYEOF
+        grep "MODULE_VERMAGIC_PREEMPT" kernel/include/linux/vermagic.h
+
+    - name: Run olddefconfig
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel olddefconfig -j2
+        grep "CONFIG_NETFILTER_XT_TARGET_DSCP" kernel/out/.config
+        grep -E "CONFIG_PREEMPT" kernel/out/.config
+
+    - name: Fix dtc yylloc for GCC 10+
+      run: |
+        set -ex
+        if [ -f kernel/scripts/dtc/dtc-lexer.l ]; then
+          sed -i '/^YYLTYPE yylloc;$/d' kernel/scripts/dtc/dtc-lexer.l
+        fi
+        if [ -f kernel/scripts/dtc/dtc-lexer.lex.c_shipped ]; then
+          sed -i '/^YYLTYPE yylloc;$/d' kernel/scripts/dtc/dtc-lexer.lex.c_shipped
+        fi
+
+    - name: Fix vdso_prepare for external modules (arm64)
+      run: |
+        set -ex
+        python3 .github/scripts/fix_vdso.py
+
+    - name: Prepare kernel scripts
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel scripts -j2
+
+    - name: Prepare modules
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel modules_prepare -j2
+
+    - name: Apply device netfilter headers + utsrelease.h
+      run: |
+        set -ex
+        rm -rf /tmp/kheaders-extract
+        mkdir -p /tmp/kheaders-extract
+        tar -xf .github/kheaders/kheaders.tar.xz -C /tmp/kheaders-extract
+
+        echo "=== Sobrescribiendo solo headers de netfilter ==="
+        # Rutas de netfilter en include/linux/
+        for DIR in \
+          "include/linux/netfilter" \
+          "include/linux/netfilter_ipv4" \
+          "include/linux/netfilter_ipv6" \
+          "include/linux/netfilter_arp" \
+          "include/linux/netfilter_bridge"
+        do
+          if [ -d "/tmp/kheaders-extract/$DIR" ]; then
+            mkdir -p "kernel/$DIR"
+            cp -a "/tmp/kheaders-extract/$DIR/." "kernel/$DIR/"
+            echo "Copiado: $DIR"
+          fi
+        done
+
+        # Rutas de netfilter en include/uapi/linux/
+        for DIR in \
+          "include/uapi/linux/netfilter" \
+          "include/uapi/linux/netfilter_ipv4" \
+          "include/uapi/linux/netfilter_ipv6" \
+          "include/uapi/linux/netfilter_arp" \
+          "include/uapi/linux/netfilter_bridge"
+        do
+          if [ -d "/tmp/kheaders-extract/$DIR" ]; then
+            mkdir -p "kernel/$DIR"
+            cp -a "/tmp/kheaders-extract/$DIR/." "kernel/$DIR/"
+            echo "Copiado: $DIR"
+          fi
+        done
+
+        # Headers de net/netfilter
+        if [ -d "/tmp/kheaders-extract/include/net/netfilter" ]; then
+          mkdir -p kernel/include/net/netfilter
+          cp -a /tmp/kheaders-extract/include/net/netfilter/. kernel/include/net/netfilter/
+          echo "Copiado: include/net/netfilter"
+        fi
+
+        # Headers sueltos de netfilter en include/linux/
+        for H in netfilter.h netfilter_bridge.h netfilter_ipv4.h netfilter_ipv6.h \
+                 netfilter_ingress.h netfilter_defs.h
+        do
+          if [ -f "/tmp/kheaders-extract/include/linux/$H" ]; then
+            cp "/tmp/kheaders-extract/include/linux/$H" "kernel/include/linux/$H"
+            echo "Copiado: include/linux/$H"
+          fi
+        done
+
+        # utsrelease.h
+        if [ -f /tmp/kheaders-extract/include/generated/utsrelease.h ]; then
+          for DIR in \
+            "kernel/out/include/generated" \
+            "kernel/include/generated" \
+            "kernel/out/arch/arm64/include/generated"
+          do
+            mkdir -p "$DIR"
+            cp /tmp/kheaders-extract/include/generated/utsrelease.h "$DIR/utsrelease.h"
+          done
+          echo "utsrelease.h aplicado"
+          cat kernel/include/generated/utsrelease.h
+        fi
+
+        echo ""
+        echo "=== Verificando x_tables.h ==="
+        grep -A5 "struct xt_target {" kernel/include/linux/netfilter/x_tables.h | head -20
+
+    - name: Build xt_DSCP only
+      run: |
+        set -ex
+        make ARCH=arm64 LLVM=1 O=kernel/out -C kernel M=net/netfilter xt_DSCP.ko \
+          KBUILD_MODPOST_WARN=1 modules -j2 2>&1 | tail -40 || true
+        echo ""
+        find . -iname "xt_DSCP.ko" -type f 2>/dev/null || echo "No se encontró xt_DSCP.ko"
+
+    - name: Verify vermagic
+      run: |
+        set -ex
+        KO=$(find . -iname "xt_DSCP.ko" -type f 2>/dev/null | head -1)
+        [ -z "$KO" ] && echo "ERROR: no encontrado" && exit 1
+        strings "$KO" | grep vermagic
+
+    - name: Copy and upload
+      run: |
+        set -ex
+        KO=$(find . -iname "xt_DSCP.ko" -type f 2>/dev/null | head -1)
+        cp "$KO" ./xt_DSCP.ko
+        sha256sum ./xt_DSCP.ko > ./xt_DSCP.ko.sha256
+        ls -lh ./xt_DSCP.ko
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: xt_DSCP-ko
+        path: |
+          xt_DSCP.ko
+          xt_DSCP.ko.sha256
+        if-no-files-found: error
